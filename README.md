@@ -29,6 +29,7 @@ While Playing, the actions are:
 - **Pause** -- Tap encoder button
 - **Transpose sequence up/down** -- Turn encoder knob
 - **Change tempo BPM** -- Push + turn encoder knob
+- **MIDI setup menu** -- Hold encoder (without turning) for 10 secs; hold 1 sec to leave
 - **Mute / Unmute steps** -- Tap corresponding step key
 - **Change step's pitch** -- Hold step key, turn encoder knob
 - **Change step's gate** -- Hold step key, push + turn encoder knob
@@ -98,7 +99,7 @@ Hold key 1, then hold another key, then turn the encoder:
 | 7 | Filter envelope amount |
 | 8 | Grit (drive + bitcrush) |
 
-The parameter and its value show on the display while editing. Key 1 alone still works as
+While editing, a SYNTH menu screen shows all parameters with the current one selected. Key 1 alone still works as
 a normal step key (mute, pitch edit). Each step's gate length ends the note early with a quick
 release. The synth patch is global and saved to flash (`synth_patch.json`) when you pause.
 

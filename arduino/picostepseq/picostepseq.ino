@@ -39,6 +39,8 @@
 
 #include "sequencer.h"
 #include "synth.h"
+#include "images.h"
+#include "activity_anim.h"
 #include "saved_sequences_json.h"  // to bootstrap the "saved_sequences.json" file
 
 #define myfont helvnCB6pt7b  // sigh
@@ -104,7 +106,7 @@ I2S i2s(OUTPUT);
 Bounce2::Button keys[numsteps];
 Bounce2::Button encoder_switch;
 
-RotaryEncoder encoder(encoderB_pin, encoderA_pin, RotaryEncoder::LatchMode::FOUR3);
+RotaryEncoder encoder(encoderA_pin, encoderB_pin, RotaryEncoder::LatchMode::FOUR3);  // A,B order sets turn direction
 void checkEncoderPosition() {  encoder.tick();  } // call tick() to check the state.
 int encoder_pos_last = 0;
 
@@ -336,8 +338,6 @@ void setup1() {
   }
 
   displaySplash();
-  displayConfig();
-  delay(1000);
 }
 
 /**
@@ -345,6 +345,7 @@ void setup1() {
  *
  * encoder tap                -- play/stop
  * encoder pushhold           -- modifier for combo
+ * encoder hold 10s (no turn) -- enter MIDI config menu (hold 1s to leave it)
  * encoder turn               -- transpose
  * encoder pushhold + turn    -- bpm
  *
@@ -370,6 +371,9 @@ void setup1() {
 int encoder_delta = 0;
 uint32_t encoder_push_millis;
 bool encoder_held = true;
+bool encoder_turned_while_held = false;  // a push+turn (e.g. bpm edit) never opens the config menu
+const uint32_t config_enter_hold_millis = 10000;
+const uint32_t config_exit_hold_millis = 1000;
 uint32_t step_push_millis;
 //bool steps_pushed[numsteps]; // which keys are pressed
 int step_push = -1;
@@ -427,7 +431,8 @@ void loop1() {
   uint32_t now = millis();
 
   if (encoder_push_millis > 0 ) {
-    if (!step_push_millis && (now-encoder_push_millis) > 1000 && !encoder_delta ) {
+    uint32_t hold_millis = (display_mode == MODE_PLAY) ? config_enter_hold_millis : config_exit_hold_millis;
+    if (!step_push_millis && (now-encoder_push_millis) > hold_millis && !encoder_delta && !encoder_turned_while_held) {
       if( !encoder_held ) {
         encoder_held = true;
         display_mode =  (display_mode + 1) % MODE_COUNT;
@@ -445,6 +450,7 @@ void loop1() {
 
   // on encoder turn
   if (encoder_delta) {
+    if (encoder_push_millis > 0) { encoder_turned_while_held = true; }
     // UI: SHIFT (key1) + key2..8 held + encoder turn = change synth param
     if (shift_used && keys[0].isPressed() && step_push > 0 && encoder_push_millis == 0) {
       int p = step_push - 1;  // key2 = SYN_WAVE, key3 = SYN_ATTACK, ...
@@ -521,6 +527,7 @@ void loop1() {
   // on encoder push
   if (encoder_switch.pressed()) {  // push encoder button
     encoder_push_millis = now;     // save when (and that) it was pushed
+    encoder_turned_while_held = false;
   }
 
   if (encoder_switch.released()) {                // release encoder button
@@ -617,7 +624,11 @@ void loop1() {
     displayConfig();
   }
   else if( display_mode == MODE_PLAY) {
-    displayUpdate(step_push);
+    if (synth_param_shown >= 0 && (shift_used || millis() - synth_param_shown_millis < 1500)) {
+      displaySynthEdit(synth_param_shown);
+    } else {
+      displayUpdate(step_push);
+    }
   }
 }
 
@@ -628,18 +639,15 @@ void loop1() {
 typedef struct { int x; int y;  const char* str;} pos_t;
 
 //// {x,y} locations of play screen items
-const int step_text_pos[] = { 0, 15, 16, 15, 32, 15, 48, 15, 64, 15, 80, 15, 96, 15, 112, 15 };
+const int step_text_pos[] = { 0, 10, 16, 10, 32, 10, 48, 10, 64, 10, 80, 10, 96, 10, 112, 10 };
 const pos_t bpm_text_pos    = {.x=0,  .y=57, .str="bpm:%3d" };
 const pos_t trans_text_pos  = {.x=55, .y=57, .str="trs:%+2d" };
 const pos_t seqno_text_pos  = {.x=0,  .y=45, .str="seq:%d" };
 const pos_t seq_info_pos    = {.x=60, .y=45, .str="" };
-const pos_t play_text_pos   = {.x=110,.y=57, .str="" };
+const pos_t playpause_pos   = {.x=128-image_playpause_w, .y=64-image_playpause_h, .str="" };  // bottom right
 
 const pos_t oct_text_offset = { .x=3, .y=10,  .str="" };
-const pos_t gate_bar_offset = { .x=0, .y=-15, .str="" };
 const pos_t edit_text_offset= { .x=3, .y=22,  .str="" };
-const int gate_bar_width = 14;
-const int gate_bar_height = 4;
 
 const char* note_strs[] = { "C ", "C#", "D ", "D# ", "E ", "F ", "F#", "G ", "G#", "A ", "A#", "B ", "C " };
 
@@ -666,8 +674,6 @@ void displayUpdate(int selected_step) {
     display.setCursor(x + edit_text_offset.x, y + edit_text_offset.y);
     display.print((i == selected_step) ? '^' : (s.on) ? ' '
                                                       : '*');
-    int gate_w = 1 + (s.gate * gate_bar_width / 16);
-    display.fillRect(x + gate_bar_offset.x, y + gate_bar_offset.y, gate_w, gate_bar_height, WHITE);
   }
 
   display.setFont(&myfont2);
@@ -684,80 +690,114 @@ void displayUpdate(int selected_step) {
   display.setCursor(seqno_text_pos.x, seqno_text_pos.y);
   display.printf(seqno_text_pos.str, seqr.seqno + 1);  // user sees 1-8
 
-  // seq info / meta, or synth param being edited
+  // seq info / meta
   display.setCursor(seq_info_pos.x, seq_info_pos.y);
-  if (synth_param_shown >= 0 && (shift_used || millis() - synth_param_shown_millis < 1500)) {
-    int p = synth_param_shown;
-    if (p == SYN_WAVE) {
-      display.printf("%s %s", synth_param_names[p], synth_wave_names[synth_params[p]]);
-    } else {
-      display.printf("%s %d", synth_param_names[p], synth_params[p]);
-    }
-  } else {
-    display.print(seq_info);
-  }
+  display.print(seq_info);
 
   // play/pause
-  display.setCursor(play_text_pos.x, play_text_pos.y);
-  display.print(seqr.playing ? " >" : "[]");
+  display.drawBitmap(playpause_pos.x, playpause_pos.y,
+                     seqr.playing ? image_play_hover_bits : image_pause_hover_bits,
+                     image_playpause_w, image_playpause_h, WHITE);
 
   display.display();
 }
 
-// {x,y} locations of config screen
-const pos_t stepsize_text_pos    = {.x=5, .y=12, .str="step size: %s"};
-const pos_t midichan_text_pos    = {.x=5, .y=24, .str="midi ch:   %d"};
-const pos_t midivel_text_pos     = {.x=5, .y=36, .str="midi vel:  %d"};
-const pos_t midisendclk_text_pos = {.x=5, .y=48, .str="midi sendclk: %s"};
+//
+// --- menu-style screens (MIDI config & synth edit share one look)
+//
+const int menu_title_y = 10;     // title baseline
+const int menu_line_y = 13;      // line under title
+const int menu_row0_y = 25;      // first row baseline
+const int menu_row_h = 12;       // row pitch
+const int menu_rows = 4;         // visible rows
+const int menu_text_x = 4;       // label x (selected label moves +3)
+const int menu_select_x = 1;     // select arrow x
+const int menu_value_right = 118;// values are right-aligned to here
+const int menu_arrow_x = 121;    // scroll arrows x
+
+void displayMenu(const char* title, const char* const labels[], char values[][12], int count, int selected) {
+  display.clearDisplay();
+  display.setFont(&myfont2);
+  display.setTextColor(WHITE, 0);
+
+  display.setCursor(menu_text_x, menu_title_y);
+  display.print(title);
+  display.drawFastHLine(0, menu_line_y, dw, WHITE);
+
+  // scroll so the selected row is always visible
+  int first = 0;
+  if (selected >= menu_rows) { first = selected - menu_rows + 1; }
+  if (first > count - menu_rows) { first = max(0, count - menu_rows); }
+
+  for (int r = 0; r < menu_rows; r++) {
+    int i = first + r;
+    if (i >= count) { break; }
+    int y = menu_row0_y + r * menu_row_h;
+    int x = menu_text_x;
+    if (i == selected) {
+      display.drawBitmap(menu_select_x, y - image_select_h, image_Select_bits, image_select_w, image_select_h, WHITE);
+      x += 3;
+    }
+    display.setCursor(x, y);
+    display.print(labels[i]);
+
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(values[i], 0, y, &x1, &y1, &w, &h);
+    display.setCursor(menu_value_right - w, y);
+    display.print(values[i]);
+  }
+
+  if (first > 0) {
+    display.drawBitmap(menu_arrow_x, menu_line_y + 3, image_ButtonUp_bits, image_arrow_w, image_arrow_h, WHITE);
+  }
+  if (first + menu_rows < count) {
+    display.drawBitmap(menu_arrow_x, dh - image_arrow_h - 2, image_ButtonDown_bits, image_arrow_w, image_arrow_h, WHITE);
+  }
+  display.display();
+}
+
+const char* const config_labels[CFG_COUNT] = { "Step size", "MIDI chan", "MIDI vel", "Send clock" };
 
 void displayConfig() {
-  display.clearDisplay();
-  display.setFont(&myfont2);
-  display.setTextColor(WHITE, 0);
-
-  if(cfg_selected == CFG_STEPSIZE) {
-    display.drawRect( stepsize_text_pos.x-4, stepsize_text_pos.y-11, 125, 14, WHITE );
-  }
-  display.setCursor( stepsize_text_pos.x, stepsize_text_pos.y);
-  const char* sstr = (cfg.step_size==SIXTEENTH_NOTE) ? "1/16" : (cfg.step_size==EIGHTH_NOTE) ? "1/8 " : "1/4 ";
-  display.printf(stepsize_text_pos.str, sstr);
-
-
-  if(cfg_selected == CFG_MIDICHAN) {
-    display.drawRect( midichan_text_pos.x-4, midichan_text_pos.y-11, 125, 14, WHITE );
-  }
-  display.setCursor( midichan_text_pos.x, midichan_text_pos.y);
-  display.printf(midichan_text_pos.str, cfg.midi_chan);
-
-  if(cfg_selected == CFG_MIDIVEL) {
-    display.drawRect( midivel_text_pos.x-4, midivel_text_pos.y-11, 125, 14, WHITE );
-  }
-  display.setCursor( midivel_text_pos.x, midivel_text_pos.y);
-  display.printf(midivel_text_pos.str, cfg.midi_velocity);
-
-  if(cfg_selected == CFG_MIDISENDCLK) {
-    display.drawRect( midisendclk_text_pos.x-4, midisendclk_text_pos.y-11, 125, 14, WHITE );
-  }
-  display.setCursor( midisendclk_text_pos.x, midisendclk_text_pos.y);
-  display.printf(midisendclk_text_pos.str, cfg.midi_send_clock ? "on":"off");
-
-  display.display();
+  char values[CFG_COUNT][12];
+  strcpy(values[CFG_STEPSIZE], (cfg.step_size==SIXTEENTH_NOTE) ? "1/16" : (cfg.step_size==EIGHTH_NOTE) ? "1/8" : "1/4");
+  snprintf(values[CFG_MIDICHAN], 12, "%d", cfg.midi_chan);
+  snprintf(values[CFG_MIDIVEL], 12, "%d", cfg.midi_velocity);
+  strcpy(values[CFG_MIDISENDCLK], cfg.midi_send_clock ? "on" : "off");
+  displayMenu("MIDI SETUP", config_labels, values, CFG_COUNT, cfg_selected);
 }
 
-void displaySplash() {
-  display.clearDisplay();
-  display.setFont(&myfont2);
-  display.setTextColor(WHITE, 0);
-  display.drawRect(0,0, dw-1, dh-1, WHITE);
-  display.setCursor(25, 32);
-  display.print("PICOSTEPSEQ");
-  display.display();
-  // a little LED dance
-  for( int i=0; i<1000; i++) {
-    for( int j=0; j<numsteps; j++) {
-      int v = 30 + 30 * sin( (j*6.2 / 8 ) + i/50.0 ) ;
-      analogWrite( led_pins[j], v);
+const char* const synth_labels[SYN_COUNT] = { "Waveform", "Attack", "Decay", "Cutoff", "Resonance", "Env amount", "Grit" };
+const char* const synth_wave_labels[WAVE_COUNT] = { "saw", "square", "pulse", "saw+sub" };
+
+void displaySynthEdit(int selected) {
+  char values[SYN_COUNT][12];
+  for (int i = 0; i < SYN_COUNT; i++) {
+    if (i == SYN_WAVE) {
+      strcpy(values[i], synth_wave_labels[synth_params[i]]);
+    } else {
+      snprintf(values[i], 12, "%d", synth_params[i]);
     }
-    delay(1);
+  }
+  displayMenu("SYNTH", synth_labels, values, SYN_COUNT, selected);
+}
+
+// 5 seconds of the "activity" animation, with the LED dance
+void displaySplash() {
+  const uint32_t splash_millis = 5000;
+  const uint32_t frame_millis = 70;
+  const int frame_count = sizeof(activity_64_64_14f_frames) / sizeof(activity_64_64_14f_frames[0]);
+  uint32_t start = millis();
+  uint32_t t;
+  while ((t = millis() - start) < splash_millis) {
+    int f = (t / frame_millis) % frame_count;
+    display.clearDisplay();
+    display.drawBitmap((dw - 64) / 2, (dh - 64) / 2, activity_64_64_14f_frames[f], 64, 64, WHITE);
+    display.display();
+    for (int j = 0; j < numsteps; j++) {  // a little LED dance
+      int v = 30 + 30 * sin((j * 6.2 / 8) + t / 50.0);
+      analogWrite(led_pins[j], v);
+    }
   }
 }

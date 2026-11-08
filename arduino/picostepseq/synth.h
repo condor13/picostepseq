@@ -34,9 +34,7 @@ enum {
 
 enum { WAVE_SAW = 0, WAVE_SQUARE, WAVE_PULSE, WAVE_SAWSUB, WAVE_COUNT };
 
-const char* synth_param_names[SYN_COUNT] = { "wave", "atk", "dcy", "cut", "res", "env", "grit" };
 const int synth_param_max[SYN_COUNT] = { WAVE_COUNT - 1, 127, 127, 127, 127, 127, 127 };
-const char* synth_wave_names[WAVE_COUNT] = { "saw", "squ", "pls", "sub" };
 
 // the global patch, edited by UI (core1), read by audio (core0)
 volatile int synth_params[SYN_COUNT] = {
