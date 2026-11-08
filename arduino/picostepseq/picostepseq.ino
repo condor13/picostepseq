@@ -11,6 +11,9 @@
  * - Adafruit_TinyUSB -- https://github.com/adafruit/Adafruit_TinyUSB_Arduino
  * - MIDI -- https://github.com/FortySevenEffects/arduino_midi_library
  * - ArduinoJson -- https://arduinojson.org/
+ * - I2S -- built into the arduino-pico core
+ *
+ * Audio out: PCM5102A I2S DAC board on GP26 (BCK), GP27 (LCK), GP28 (DIN)
  *
  * To upload:
  * - Use Arduino IDE 1.8.19
@@ -29,11 +32,13 @@
 #include <MIDI.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <I2S.h>
 
 #include "fonts/helvnCB6pt7b.h"
 #include "fonts/ter_u12n7b.h"  // CirPy's default displayio font, it seems
 
-#include "Sequencer.h"
+#include "sequencer.h"
+#include "synth.h"
 #include "saved_sequences_json.h"  // to bootstrap the "saved_sequences.json" file
 
 #define myfont helvnCB6pt7b  // sigh
@@ -82,6 +87,10 @@ const int oled_i2c_addr = 0x3C;
 
 const int midi_tx_pin = 16;
 const int midi_rx_pin = 17;
+
+// PCM5102A I2S DAC (LRCK/"LCK" must be BCK+1)
+const int i2s_bck_pin = 26;   // + GP27 = LCK
+const int i2s_data_pin = 28;
 // end hardware definitions
 
 Adafruit_USBD_MIDI usb_midi;                                  // USB MIDI object
@@ -89,6 +98,8 @@ MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDIusb);  // USB MIDI
 MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDIuart);      // Serial MIDI
 
 Adafruit_SSD1306 display(dw, dh, &Wire, -1);
+
+I2S i2s(OUTPUT);
 
 Bounce2::Button keys[numsteps];
 Bounce2::Button encoder_switch;
@@ -119,6 +130,7 @@ void send_note_on(uint8_t note, uint8_t vel, uint8_t gate, bool on) {
   if (on) {
     MIDIusb.sendNoteOn(note, cfg.midi_velocity, cfg.midi_chan);
     MIDIuart.sendNoteOn(note, cfg.midi_velocity, cfg.midi_chan);
+    synth_note_on(note);
   }
   if (midi_out_debug) { Serial.printf("noteOn:  %d %d %d %d\n", note, vel, gate, on); }
 }
@@ -128,6 +140,7 @@ void send_note_off(uint8_t note, uint8_t vel, uint8_t gate, bool on) {
   if (on) {
     MIDIusb.sendNoteOff(note, cfg.midi_velocity, cfg.midi_chan);
     MIDIuart.sendNoteOff(note, cfg.midi_velocity, cfg.midi_chan);
+    synth_note_off(note);
   }
   if (midi_out_debug) { Serial.printf("noteOff: %d %d %d %d\n", note, vel, gate, on); }
 }
@@ -235,14 +248,37 @@ void setup() {
   MIDIuart.turnThruOff();  // turn off echo
 
   Serial.begin(115200);
+
+  // AUDIO
+  synth_init();
+  i2s.setBCLK(i2s_bck_pin);   // LRCK is automatically BCLK+1
+  i2s.setDATA(i2s_data_pin);
+  i2s.setBitsPerSample(32);   // 64*fs bit clock, keeps the PCM5102 PLL happy at low rates
+  i2s.setBuffers(8, 128);    // 8 x 64 stereo frames = ~23ms of buffering
+  if (!i2s.begin(synth_sample_rate)) {
+    Serial.println("I2S init failed");
+  }
+}
+
+// keep the I2S DMA buffers topped up with synth audio
+void synth_update() {
+  int16_t buf[synth_block_size];
+  while (i2s.availableForWrite() >= synth_block_size * 8) {  // 8 bytes per stereo 32-bit frame
+    synth_render_block(buf);
+    for (int i = 0; i < synth_block_size; i++) {
+      int32_t v = (int32_t)buf[i] << 16;
+      i2s.write32(v, v);
+    }
+  }
 }
 
 //
-// --- MIDI in/out on core0
+// --- MIDI in/out & audio on core0
 //
 void loop() {
   midi_read_and_forward();
   seqr.update();  // will call send_note_{on,off} callbacks
+  synth_update();
 }
 
 void configure_sequencer() {
@@ -265,6 +301,7 @@ void setup1() {
 
   sequences_read();
   sequence_load(seqr.seqno);  // 0
+  synth_patch_read();
 
   configure_sequencer();
 
@@ -322,6 +359,11 @@ void setup1() {
  * encoder hold + key hold
  * encoder hold + key hold + encoder turn (currently unused)
  *
+ * key1 is also SHIFT, but only once a second key is pressed while it's held:
+ * key1 hold + key2..8 hold + encoder turn  -- edit synth param:
+ *   2=wave 3=attack 4=decay 5=cutoff 6=resonance 7=filter env amount 8=grit
+ * (key1 alone still behaves as a normal step key)
+ *
  */
 
 // variables for UI state management
@@ -333,6 +375,9 @@ uint32_t step_push_millis;
 int step_push = -1;
 bool step_edited = false;
 char seq_info[11];  // 10 chars + nul FIXME
+bool shift_used = false;  // key1 is being used as SHIFT for a synth param combo
+int synth_param_shown = -1;  // synth param to show on display
+uint32_t synth_param_shown_millis = 0;
 
 enum {
   MODE_PLAY = 0,
@@ -400,8 +445,19 @@ void loop1() {
 
   // on encoder turn
   if (encoder_delta) {
+    // UI: SHIFT (key1) + key2..8 held + encoder turn = change synth param
+    if (shift_used && keys[0].isPressed() && step_push > 0 && encoder_push_millis == 0) {
+      int p = step_push - 1;  // key2 = SYN_WAVE, key3 = SYN_ATTACK, ...
+      synth_param_adjust(p, (p == SYN_WAVE) ? encoder_delta : encoder_delta * 2);
+      synth_param_shown = p;
+      synth_param_shown_millis = now;
+      step_edited = true;
+    }
+    // UI: SHIFT still held but param key released: ignore turns
+    else if (shift_used && keys[0].isPressed() && encoder_push_millis == 0) {
+    }
     // UI: encoder turn + push while step key held = change step's gate
-    if (step_push > -1 && encoder_push_millis > 0) {
+    else if (step_push > -1 && encoder_push_millis > 0) {
       //key_with_turn_push(encoder_delta);
       int gate = seqr.steps[step_push].gate;
       gate = constrain(gate + encoder_delta, 1, 15);
@@ -476,6 +532,7 @@ void loop1() {
           delay(10);  // wait a bit for sequencer to change state
           if (!seqr.playing) {
             sequences_write();  // write to disk on pause
+            synth_patch_write();  // only writes if changed
           }
         }
       }
@@ -499,7 +556,13 @@ void loop1() {
       step_push = i;
       step_push_millis = now;
 
-      if (encoder_push_millis > 0) { // not pushing encoder
+      if (i > 0 && keys[0].isPressed() && encoder_push_millis == 0) {
+        // UI: SHIFT combo started (key1 held + this key), no note preview
+        shift_used = true;
+        synth_param_shown = i - 1;
+        synth_param_shown_millis = now;
+      }
+      else if (encoder_push_millis > 0) { // pushing encoder
         // do nothing
       } else {
         if (!seqr.playing) {
@@ -519,6 +582,10 @@ void loop1() {
         else {
           sequence_load(step_push);
         }
+      } else if (shift_used) {  // UI: part of a SHIFT combo, no mute toggling
+        if (i == 0 && !seqr.playing) {
+          send_note_off(s.note, s.vel, s.gate, true);  // end key1's preview note
+        }
       } else {  // UI: encoder not pushed, mutes or play notes
         // UI: playing: step keys = mutes/unmutes
         if (seqr.playing) {
@@ -536,6 +603,12 @@ void loop1() {
       step_push_millis = 0;
       step_push = -1;  //
       step_edited = false;
+      // SHIFT combo is over once all keys are up
+      bool any_pressed = false;
+      for (uint8_t j = 0; j < numsteps; j++) {
+        if (keys[j].isPressed()) { any_pressed = true; }
+      }
+      if (!any_pressed) { shift_used = false; }
     }
   }
 
@@ -611,9 +684,18 @@ void displayUpdate(int selected_step) {
   display.setCursor(seqno_text_pos.x, seqno_text_pos.y);
   display.printf(seqno_text_pos.str, seqr.seqno + 1);  // user sees 1-8
 
-  // seq info / meta
+  // seq info / meta, or synth param being edited
   display.setCursor(seq_info_pos.x, seq_info_pos.y);
-  display.print(seq_info);
+  if (synth_param_shown >= 0 && (shift_used || millis() - synth_param_shown_millis < 1500)) {
+    int p = synth_param_shown;
+    if (p == SYN_WAVE) {
+      display.printf("%s %s", synth_param_names[p], synth_wave_names[synth_params[p]]);
+    } else {
+      display.printf("%s %d", synth_param_names[p], synth_params[p]);
+    }
+  } else {
+    display.print(seq_info);
+  }
 
   // play/pause
   display.setCursor(play_text_pos.x, play_text_pos.y);

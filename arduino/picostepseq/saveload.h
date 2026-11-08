@@ -98,3 +98,53 @@ void sequence_save(int seq_num) {
     ;
   }
 }
+
+//
+// --- synth patch load / save (one global patch)
+//
+
+const char* synth_save_file = "/synth_patch.json";
+
+// write synth patch to "disk", but only if it changed
+void synth_patch_write() {
+  if (!synth_patch_dirty) { return; }
+  synth_patch_dirty = false;
+  StaticJsonDocument<256> doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (int i = 0; i < SYN_COUNT; i++) {
+    arr.add(synth_params[i]);
+  }
+  LittleFS.remove(synth_save_file);
+  File file = LittleFS.open(synth_save_file, "w");
+  if (!file) {
+    Serial.println("synth_patch_write: Failed to create file");
+    return;
+  }
+  serializeJson(doc, file);
+  file.close();
+  Serial.println("synth patch saved");
+}
+
+// read synth patch from "disk", keeps defaults if no file
+void synth_patch_read() {
+  File file = LittleFS.open(synth_save_file, "r");
+  if (!file) {
+    Serial.println("synth_patch_read: no patch file, using defaults");
+    return;
+  }
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) {
+    Serial.print("synth_patch_read: deserialize failed: ");
+    Serial.println(error.c_str());
+    return;
+  }
+  JsonArray arr = doc.as<JsonArray>();
+  for (int i = 0; i < SYN_COUNT && i < (int)arr.size(); i++) {
+    int v = arr[i];
+    if (v < 0) { v = 0; }
+    if (v > synth_param_max[i]) { v = synth_param_max[i]; }
+    synth_params[i] = v;
+  }
+}

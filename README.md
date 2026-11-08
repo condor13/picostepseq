@@ -60,6 +60,48 @@ The display is hopefully clear. It's divided into the top section showing 8 note
 
 <a href="./docs/picostepseq_display1.jpg"><img width=700 src="./docs/picostepseq_display1.jpg"/></a>
 
+### Built-in synth (Arduino firmware)
+
+The Arduino firmware has a small, deliberately gritty mono synth that plays the sequence
+through a PCM5102A I2S DAC board (the common purple "GY-PCM5102" / WCMCU module).
+MIDI out keeps working at the same time.
+
+Wiring (only GP26-28 are free on the Pico, and they're exactly what I2S needs):
+
+| PCM5102 pin | Connect to |
+|---|---|
+| VCC | Pico VBUS (5V, pin 40) |
+| GND | Pico GND |
+| BCK | GP26 |
+| LCK | GP27 (must be BCK+1) |
+| DIN | GP28 |
+| SCL | GND (the DAC makes its own clock) |
+| FLT | GND (normal filter) |
+| DMP | GND (de-emphasis off) |
+| FMT | GND (I2S format) |
+| XMT | 3.3V (un-mute; if left floating the board may be silent) |
+
+Leave the module's own "3.3V" pin unconnected. On some modules FLT/DMP/FMT/XMT are instead set
+by solder jumpers on the back (H1L-H4L); the wiring above works either way.
+Audio comes out of the module's 3.5mm "LINE OUT" jack. It's line level, so use an amp or powered speakers.
+
+Synth controls: step key 1 doubles as **SHIFT** once a second key is held with it.
+Hold key 1, then hold another key, then turn the encoder:
+
+| SHIFT + key | Parameter |
+|---|---|
+| 2 | Waveform (saw / square / pulse / saw+sub) |
+| 3 | Attack |
+| 4 | Decay |
+| 5 | Filter cutoff |
+| 6 | Filter resonance |
+| 7 | Filter envelope amount |
+| 8 | Grit (drive + bitcrush) |
+
+The parameter and its value show on the display while editing. Key 1 alone still works as
+a normal step key (mute, pitch edit). Each step's gate length ends the note early with a quick
+release. The synth patch is global and saved to flash (`synth_patch.json`) when you pause.
+
 ### MIDI
 
 PicoStepSeq outputs both USB MIDI and Serial MIDI.
