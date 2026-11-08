@@ -10,6 +10,7 @@
  * Board: Raspberry Pi Pico (arduino-pico core). No extra libraries needed.
  */
 
+#include <Adafruit_TinyUSB.h>  // needed when "USB Stack: Adafruit TinyUSB" is selected
 #include <I2S.h>
 
 const int bck_pin = 26;   // LCK is automatically GP27
