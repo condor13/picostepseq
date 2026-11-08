@@ -29,12 +29,10 @@ While Playing, the actions are:
 - **Pause** -- Tap encoder button
 - **Transpose sequence up/down** -- Turn encoder knob
 - **Change tempo BPM** -- Push + turn encoder knob
-- **MIDI setup menu** -- Hold encoder (without turning) for 10 secs; hold 1 sec to leave
 - **Mute / Unmute steps** -- Tap corresponding step key
 - **Change step's pitch** -- Hold step key, turn encoder knob
 - **Change step's gate** -- Hold step key, push + turn encoder knob
-- **Load sequence** -- Push encoder, tap step key 1-8, release encoder
-- **Save sequence** -- Push encoder, hold step key 1-8 for 2 secs, release encoder
+- **Pages (synth, MIDI, load, save)** -- hold step key 1 (SHIFT) + tap key 2-5, see below
 
 When Paused, the actions are:
 - **Play** -- Tap encoder button
@@ -86,22 +84,24 @@ Leave the module's own "3.3V" pin unconnected. On some modules FLT/DMP/FMT/XMT a
 by solder jumpers on the back (H1L-H4L); the wiring above works either way.
 Audio comes out of the module's 3.5mm "LINE OUT" jack. It's line level, so use an amp or powered speakers.
 
-Synth controls: step key 1 doubles as **SHIFT** once a second key is held with it.
-Hold key 1, then hold another key, then turn the encoder:
+Pages: step key 1 doubles as **SHIFT** once a second key is pressed while it's held.
+Hold key 1 and tap:
 
-| SHIFT + key | Parameter |
+| SHIFT + key | Page |
 |---|---|
-| 2 | Waveform (saw / square / pulse / saw+sub) |
-| 3 | Attack |
-| 4 | Decay |
-| 5 | Filter cutoff |
-| 6 | Filter resonance |
-| 7 | Filter envelope amount |
-| 8 | Grit (drive + bitcrush) |
+| 2 | SYNTH: wave, grit, cutoff, resonance, attack, decay, filter env amount |
+| 3 | MIDI: step size, MIDI channel, MIDI velocity, send clock |
+| 4 | LOAD a sequence slot |
+| 5 | SAVE to a sequence slot |
+| same key again, or 8 | leave the page |
 
-While editing, a SYNTH menu screen shows all parameters with the current one selected. Key 1 alone still works as
-a normal step key (mute, pitch edit). Each step's gate length ends the note early with a quick
-release. The synth patch is global and saved to flash (`synth_patch.json`) when you pause.
+On a page: **turn** the encoder to change the selected value (or pick a slot), **tap** it to select
+the next item (or load / save the selected slot). Push + turn still changes BPM, and step keys still
+mute and edit notes. The sequencer keeps running in the background.
+
+Key 1 alone still works as a normal step key (mute, pitch edit). Each step's gate length ends the note
+early with a quick release. The synth patch is global and saved to flash (`synth_patch.json`) when you
+pause. Sequences saved while playing are written to flash on the next pause.
 
 ### MIDI
 

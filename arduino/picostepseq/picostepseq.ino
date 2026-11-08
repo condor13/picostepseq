@@ -341,53 +341,34 @@ void setup1() {
 }
 
 /**
- * Let's talk about UI input "verbs".  This is what we got:
+ * UI input "verbs":
  *
- * encoder tap                -- play/stop
- * encoder pushhold           -- modifier for combo
- * encoder hold 10s (no turn) -- enter MIDI config menu (hold 1s to leave it)
- * encoder turn               -- transpose
+ * encoder tap                -- play/stop (on a page: select next item / load / save)
+ * encoder turn               -- transpose (on a page: change selected value / slot)
  * encoder pushhold + turn    -- bpm
  *
- * key tap                    -- mute/unmute or play step
- * key hold                   -- modifier for combo ()
+ * key tap                    -- mute/unmute (playing) or play step note (paused)
+ * key hold + encoder turn    -- change step's note
+ * key hold + encoder pushhold + encoder turn -- change step's gate
  *
- * key hold + encoder turn
- * key hold + encoder tap  (unused)
- * key hold + encoder pushhold + encoder turn
- *
- * encoder hold + key tap
- * encoder hold + key hold
- * encoder hold + key hold + encoder turn (currently unused)
- *
- * key1 is also SHIFT, but only once a second key is pressed while it's held:
- * key1 hold + key2..8 hold + encoder turn  -- edit synth param:
- *   2=wave 3=attack 4=decay 5=cutoff 6=resonance 7=filter env amount 8=grit
+ * key1 is also SHIFT, once a second key is pressed while it's held:
+ * SHIFT + key2  -- page 1: SYNTH edit
+ * SHIFT + key3  -- page 2: MIDI / step config
+ * SHIFT + key4  -- page 3: LOAD sequence
+ * SHIFT + key5  -- page 4: SAVE sequence
+ * SHIFT + same key again, or SHIFT + key8 -- leave page
  * (key1 alone still behaves as a normal step key)
  *
+ * The sequencer keeps running while a page is shown.
  */
 
 // variables for UI state management
 int encoder_delta = 0;
 uint32_t encoder_push_millis;
-bool encoder_held = true;
-bool encoder_turned_while_held = false;  // a push+turn (e.g. bpm edit) never opens the config menu
-const uint32_t config_enter_hold_millis = 10000;
-const uint32_t config_exit_hold_millis = 1000;
 uint32_t step_push_millis;
-//bool steps_pushed[numsteps]; // which keys are pressed
 int step_push = -1;
 bool step_edited = false;
-char seq_info[11];  // 10 chars + nul FIXME
-bool shift_used = false;  // key1 is being used as SHIFT for a synth param combo
-int synth_param_shown = -1;  // synth param to show on display
-uint32_t synth_param_shown_millis = 0;
-
-enum {
-  MODE_PLAY = 0,
-  MODE_CONFIG,
-  MODE_COUNT   // how many modes we got
-};
+bool shift_used = false;  // key1 is being used as SHIFT for a combo
 
 enum {
   CFG_STEPSIZE = 0,
@@ -397,9 +378,100 @@ enum {
   CFG_COUNT
 };
 
-int display_mode = MODE_PLAY;
-int cfg_selected = -1; // one of config_selected
-//int cfg_i = 0; // arbitrary counter to be used by whatever config is selected
+enum {
+  PAGE_NONE = 0,
+  PAGE_SYNTH,
+  PAGE_MIDI,
+  PAGE_LOAD,
+  PAGE_SAVE,
+};
+
+int page = PAGE_NONE;
+int page_sel = 0;           // selected item on current page
+char page_msg[22] = "";     // transient message on load/save pages
+uint32_t page_msg_millis = 0;
+
+// SYNTH page selection order (left column, then right column)
+const int synth_page_order[SYN_COUNT] = { SYN_WAVE, SYN_GRIT, SYN_CUTOFF, SYN_RESO, SYN_ATTACK, SYN_DECAY, SYN_ENVAMT };
+
+int page_item_count() {
+  switch (page) {
+    case PAGE_SYNTH: return SYN_COUNT;
+    case PAGE_MIDI: return CFG_COUNT;
+    default: return numseqs;
+  }
+}
+
+// SHIFT + key pressed: open/close pages
+void page_shift_key(int key) {
+  int target = PAGE_NONE;
+  if (key == 1) { target = PAGE_SYNTH; }
+  else if (key == 2) { target = PAGE_MIDI; }
+  else if (key == 3) { target = PAGE_LOAD; }
+  else if (key == 4) { target = PAGE_SAVE; }
+  else if (key == 7) { page = PAGE_NONE; return; }  // SHIFT+8 = exit
+  else { return; }  // unused combo
+
+  if (page == target) {  // same combo again = exit
+    page = PAGE_NONE;
+    return;
+  }
+  page = target;
+  page_sel = (page == PAGE_LOAD || page == PAGE_SAVE) ? seqr.seqno : 0;
+  page_msg[0] = 0;
+}
+
+// encoder turned while a page is shown
+void page_turn(int delta) {
+  if (page == PAGE_SYNTH) {
+    int p = synth_page_order[page_sel];
+    synth_param_adjust(p, (p == SYN_WAVE) ? delta : delta * 2);
+  }
+  else if (page == PAGE_MIDI) {
+    if (page_sel == CFG_STEPSIZE) {
+      // cycle 1/16 -> 1/8 -> 1/4
+      int idx = (cfg.step_size == SIXTEENTH_NOTE) ? 0 : (cfg.step_size == EIGHTH_NOTE) ? 1 : 2;
+      idx = constrain(idx + delta, 0, 2);
+      const int sizes[3] = { SIXTEENTH_NOTE, EIGHTH_NOTE, QUARTER_NOTE };
+      cfg.step_size = sizes[idx];
+      configure_sequencer();
+    }
+    else if (page_sel == CFG_MIDICHAN) {
+      cfg.midi_chan = constrain(cfg.midi_chan + delta, 1, 16);
+    }
+    else if (page_sel == CFG_MIDIVEL) {
+      cfg.midi_velocity = constrain(cfg.midi_velocity + delta * 2, 1, 127);
+    }
+    else if (page_sel == CFG_MIDISENDCLK) {
+      cfg.midi_send_clock = !cfg.midi_send_clock;
+      seqr.send_clock = cfg.midi_send_clock;
+    }
+  }
+  else {  // LOAD / SAVE: pick slot, wrapping around
+    page_sel = (page_sel + delta % numseqs + numseqs) % numseqs;
+  }
+}
+
+// encoder tapped while a page is shown
+void page_tap() {
+  if (page == PAGE_SYNTH || page == PAGE_MIDI) {
+    page_sel = (page_sel + 1) % page_item_count();
+  }
+  else if (page == PAGE_LOAD) {
+    sequence_load(page_sel);
+    snprintf(page_msg, sizeof(page_msg), "  loaded seq %d", page_sel + 1);
+    page_msg_millis = millis();
+  }
+  else if (page == PAGE_SAVE) {
+    sequence_save(page_sel);  // to RAM; written to flash on next pause
+    seqr.seqno = page_sel;
+    snprintf(page_msg, sizeof(page_msg), "  saved to seq %d", page_sel + 1);
+    page_msg_millis = millis();
+    if (!seqr.playing) {
+      sequences_write();  // not playing, safe to write flash now
+    }
+  }
+}
 
 //
 // --- UI handling on core1
@@ -430,41 +502,13 @@ void loop1() {
 
   uint32_t now = millis();
 
-  if (encoder_push_millis > 0 ) {
-    uint32_t hold_millis = (display_mode == MODE_PLAY) ? config_enter_hold_millis : config_exit_hold_millis;
-    if (!step_push_millis && (now-encoder_push_millis) > hold_millis && !encoder_delta && !encoder_turned_while_held) {
-      if( !encoder_held ) {
-        encoder_held = true;
-        display_mode =  (display_mode + 1) % MODE_COUNT;
-        if( display_mode == MODE_PLAY ) { // switched back to play mode
-          configure_sequencer();
-        }
-      }
-    }
-    if (step_push_millis > 0) { // we're pushing a step key too
-      if (encoder_push_millis < step_push_millis) {  // and encoder was pushed first
-        strcpy(seq_info, "saveseq");
-      }
-    }
-  }
-
   // on encoder turn
   if (encoder_delta) {
-    if (encoder_push_millis > 0) { encoder_turned_while_held = true; }
-    // UI: SHIFT (key1) + key2..8 held + encoder turn = change synth param
-    if (shift_used && keys[0].isPressed() && step_push > 0 && encoder_push_millis == 0) {
-      int p = step_push - 1;  // key2 = SYN_WAVE, key3 = SYN_ATTACK, ...
-      synth_param_adjust(p, (p == SYN_WAVE) ? encoder_delta : encoder_delta * 2);
-      synth_param_shown = p;
-      synth_param_shown_millis = now;
-      step_edited = true;
-    }
-    // UI: SHIFT still held but param key released: ignore turns
-    else if (shift_used && keys[0].isPressed() && encoder_push_millis == 0) {
+    // UI: SHIFT held: ignore turns
+    if (shift_used && keys[0].isPressed()) {
     }
     // UI: encoder turn + push while step key held = change step's gate
     else if (step_push > -1 && encoder_push_millis > 0) {
-      //key_with_turn_push(encoder_delta);
       int gate = seqr.steps[step_push].gate;
       gate = constrain(gate + encoder_delta, 1, 15);
       seqr.steps[step_push].gate = gate;
@@ -489,37 +533,13 @@ void loop1() {
       seqr.set_tempo(tempo);
       Serial.printf("TEMPO: %d %f\n", (int)seqr.tempo(), seqr.tempo());
     }
+    // UI: encoder turn on a page = change selected value
+    else if (page != PAGE_NONE) {
+      page_turn(encoder_delta);
+    }
     // UI: encoder turn = change transpose
     else {
-      if( display_mode == MODE_PLAY ) { // play screene
-        seqr.transpose = constrain(seqr.transpose + encoder_delta, -36, 36);
-      }
-      else if (display_mode == MODE_CONFIG) {
-        if (cfg_selected==CFG_STEPSIZE) { // ugh
-          if( (encoder_delta >0 && cfg.step_size == QUARTER_NOTE) ||
-              (encoder_delta <0 && cfg.step_size == SIXTEENTH_NOTE) ) {
-            cfg.step_size = EIGHTH_NOTE;
-          }
-          else if( (encoder_delta >0 && cfg.step_size == EIGHTH_NOTE) ||
-                   (encoder_delta <0 && cfg.step_size == QUARTER_NOTE) ) {
-            cfg.step_size = SIXTEENTH_NOTE;
-          }
-          else if( (encoder_delta >0 && cfg.step_size == SIXTEENTH_NOTE) ||
-                   (encoder_delta <0 && cfg.step_size == EIGHTH_NOTE) ) {
-            cfg.step_size = QUARTER_NOTE;
-          }
-          configure_sequencer();
-        }
-        else if(cfg_selected == CFG_MIDICHAN) {
-          cfg.midi_chan = constrain( 1 + ((cfg.midi_chan-1) + encoder_delta) % 16, 1,16);
-        }
-        else if(cfg_selected == CFG_MIDIVEL) {
-          cfg.midi_velocity = constrain( 1 + ((cfg.midi_velocity-1) + (encoder_delta*2)) % 127, 1,127);
-        }
-        else if(cfg_selected == CFG_MIDISENDCLK) {
-          cfg.midi_send_clock = (cfg.midi_send_clock + 1) % 2; // on/off
-        }
-      }
+      seqr.transpose = constrain(seqr.transpose + encoder_delta, -36, 36);
     }
     encoder_delta = 0;  // we own turning, and we've used it
   }
@@ -527,28 +547,22 @@ void loop1() {
   // on encoder push
   if (encoder_switch.pressed()) {  // push encoder button
     encoder_push_millis = now;     // save when (and that) it was pushed
-    encoder_turned_while_held = false;
   }
 
-  if (encoder_switch.released()) {                // release encoder button
-    if (step_push == -1 && encoder_delta == 0) {  // step key is not pressed and no encoder turn
-      if( display_mode == MODE_PLAY ) { // play screen
-        // UI: encoder tap with no key == play/pause
-        if (now - encoder_push_millis < 300) {
-          seqr.toggle_play_stop();
-          delay(10);  // wait a bit for sequencer to change state
-          if (!seqr.playing) {
-            sequences_write();  // write to disk on pause
-            synth_patch_write();  // only writes if changed
-          }
+  if (encoder_switch.released()) {  // release encoder button
+    // UI: encoder tap with no key held
+    if (step_push == -1 && (now - encoder_push_millis) < 300) {
+      if (page != PAGE_NONE) {
+        page_tap();  // select next / load / save
+      } else {
+        seqr.toggle_play_stop();  // play/pause
+        delay(10);  // wait a bit for sequencer to change state
+        if (!seqr.playing) {
+          sequences_write();  // write to disk on pause
+          synth_patch_write();  // only writes if changed
         }
       }
-      else if( display_mode == MODE_CONFIG ){ // config screen
-        cfg_selected = (cfg_selected + 1) % CFG_COUNT;
-        // FIXME: need to load config
-      }
     }
-    encoder_held = 0;
     encoder_push_millis = 0;  // we own it, and we're done with it
   }
 
@@ -564,10 +578,9 @@ void loop1() {
       step_push_millis = now;
 
       if (i > 0 && keys[0].isPressed() && encoder_push_millis == 0) {
-        // UI: SHIFT combo started (key1 held + this key), no note preview
+        // UI: SHIFT combo (key1 held + this key): open/close pages, no note preview
         shift_used = true;
-        synth_param_shown = i - 1;
-        synth_param_shown_millis = now;
+        page_shift_key(i);
       }
       else if (encoder_push_millis > 0) { // pushing encoder
         // do nothing
@@ -579,26 +592,16 @@ void loop1() {
     }
 
     else if (keys[i].released()) {    // release event
-      if (encoder_push_millis > 0) {  // UI: load/save sequence mode
-        // UI: encoder push + hold step key = save sequence
-        if (now - step_push_millis > 1000) {
-          sequence_save(step_push);
-          strcpy(seq_info, "");
-        }
-        // UI: encoder push + tap step key = load sequence
-        else {
-          sequence_load(step_push);
-        }
+      if (encoder_push_millis > 0) {
+        // pushing encoder (gate edit combo): nothing to do on release
       } else if (shift_used) {  // UI: part of a SHIFT combo, no mute toggling
         if (i == 0 && !seqr.playing) {
           send_note_off(s.note, s.vel, s.gate, true);  // end key1's preview note
         }
-      } else {  // UI: encoder not pushed, mutes or play notes
+      } else {  // UI: mutes or play notes
         // UI: playing: step keys = mutes/unmutes
         if (seqr.playing) {
-          if (step_edited) {
-          } else {
-            // UI: if playing, step keys == mute/unmute toggle
+          if (!step_edited) {
             seqr.steps[i].on = !seqr.steps[i].on;
           }
         }
@@ -620,18 +623,11 @@ void loop1() {
   }
 
   // DISPLAY update
-  if (display_mode == MODE_CONFIG) {
-    displayConfig();
-  }
-  else if( display_mode == MODE_PLAY) {
-    if (synth_param_shown >= 0 && (shift_used || millis() - synth_param_shown_millis < 1500)) {
-      displaySynthEdit(synth_param_shown);
-    } else {
-      displayUpdate(step_push);
-    }
-  }
+  if (page == PAGE_SYNTH) { displayPageSynth(); }
+  else if (page == PAGE_MIDI) { displayPageMidi(); }
+  else if (page == PAGE_LOAD || page == PAGE_SAVE) { displayPageSlots(); }
+  else { displayUpdate(step_push); }
 }
-
 
 //
 // --- display details
@@ -643,7 +639,6 @@ const int step_text_pos[] = { 0, 10, 16, 10, 32, 10, 48, 10, 64, 10, 80, 10, 96,
 const pos_t bpm_text_pos    = {.x=0,  .y=57, .str="bpm:%3d" };
 const pos_t trans_text_pos  = {.x=55, .y=57, .str="trs:%+2d" };
 const pos_t seqno_text_pos  = {.x=0,  .y=45, .str="seq:%d" };
-const pos_t seq_info_pos    = {.x=60, .y=45, .str="" };
 const pos_t playpause_pos   = {.x=128-image_playpause_w, .y=64-image_playpause_h, .str="" };  // bottom right
 
 const pos_t oct_text_offset = { .x=3, .y=10,  .str="" };
@@ -690,10 +685,6 @@ void displayUpdate(int selected_step) {
   display.setCursor(seqno_text_pos.x, seqno_text_pos.y);
   display.printf(seqno_text_pos.str, seqr.seqno + 1);  // user sees 1-8
 
-  // seq info / meta
-  display.setCursor(seq_info_pos.x, seq_info_pos.y);
-  display.print(seq_info);
-
   // play/pause
   display.drawBitmap(playpause_pos.x, playpause_pos.y,
                      seqr.playing ? image_play_hover_bits : image_pause_hover_bits,
@@ -703,84 +694,124 @@ void displayUpdate(int selected_step) {
 }
 
 //
-// --- menu-style screens (MIDI config & synth edit share one look)
+// --- pages (SHIFT + key2..5), built-in 6x8 font, coords are top-left
 //
-const int menu_title_y = 10;     // title baseline
-const int menu_line_y = 13;      // line under title
-const int menu_row0_y = 25;      // first row baseline
-const int menu_row_h = 12;       // row pitch
-const int menu_rows = 4;         // visible rows
-const int menu_text_x = 4;       // label x (selected label moves +3)
-const int menu_select_x = 1;     // select arrow x
-const int menu_value_right = 118;// values are right-aligned to here
-const int menu_arrow_x = 121;    // scroll arrows x
+const char* page_title_left = "synthIO";
 
-void displayMenu(const char* title, const char* const labels[], char values[][12], int count, int selected) {
+void drawPageTitle(const char* right) {
+  display.fillRect(0, 0, dw, 9, WHITE);
+  display.setTextColor(0);
+  display.setTextWrap(false);
+  display.setCursor(1, 1);
+  display.print(page_title_left);
+  display.setCursor(dw - 1 - 6 * strlen(right), 1);
+  display.print(right);
+  display.setTextColor(WHITE);
+}
+
+// label: when selected, select arrow at x-4 and label moves 3px right
+void drawPageLabel(int x, int y, const char* str, bool selected) {
+  if (selected) {
+    display.drawBitmap(x - 4, y, image_Select_bits, image_select_w, image_select_h, WHITE);
+    x += 3;
+  }
+  display.setCursor(x, y);
+  display.print(str);
+}
+
+// outlined bar, filled in proportion to val/maxv
+void drawPageBar(int x, int y, int w, int val, int maxv) {
+  display.drawRect(x, y, w, 7, WHITE);
+  int fw = (w - 2) * val / maxv;
+  if (fw > 0) { display.fillRect(x + 1, y + 1, fw, 5, WHITE); }
+}
+
+const char* const synth_wave_labels[WAVE_COUNT] = { "saw", "square", "pulse", "saw+sub" };
+
+// page 1: SYNTH
+void displayPageSynth() {
   display.clearDisplay();
-  display.setFont(&myfont2);
-  display.setTextColor(WHITE, 0);
+  display.setFont();
+  drawPageTitle("EDIT");
+  int sel = synth_page_order[page_sel];
+  const int row1 = 27, row2 = 40, row3 = 52;
 
-  display.setCursor(menu_text_x, menu_title_y);
-  display.print(title);
-  display.drawFastHLine(0, menu_line_y, dw, WHITE);
+  drawPageLabel(6, 14, "Wve", sel == SYN_WAVE);
+  display.setCursor(39, 14);
+  display.print(synth_wave_labels[synth_params[SYN_WAVE]]);
 
-  // scroll so the selected row is always visible
-  int first = 0;
-  if (selected >= menu_rows) { first = selected - menu_rows + 1; }
-  if (first > count - menu_rows) { first = max(0, count - menu_rows); }
+  drawPageLabel(5, row1, "Grt", sel == SYN_GRIT);
+  drawPageBar(31, row1, 32, synth_params[SYN_GRIT], 127);
+  drawPageLabel(5, row2, "Cut", sel == SYN_CUTOFF);
+  drawPageBar(31, row2, 32, synth_params[SYN_CUTOFF], 127);
+  drawPageLabel(5, row3, "Res", sel == SYN_RESO);
+  drawPageBar(31, row3, 32, synth_params[SYN_RESO], 127);
 
-  for (int r = 0; r < menu_rows; r++) {
-    int i = first + r;
-    if (i >= count) { break; }
-    int y = menu_row0_y + r * menu_row_h;
-    int x = menu_text_x;
-    if (i == selected) {
-      display.drawBitmap(menu_select_x, y - image_select_h, image_Select_bits, image_select_w, image_select_h, WHITE);
-      x += 3;
+  drawPageLabel(70, row1, "Atk", sel == SYN_ATTACK);
+  drawPageBar(93, row1, 33, synth_params[SYN_ATTACK], 127);
+  drawPageLabel(70, row2, "Dcy", sel == SYN_DECAY);
+  drawPageBar(93, row2, 33, synth_params[SYN_DECAY], 127);
+  drawPageLabel(70, row3, "Env", sel == SYN_ENVAMT);
+  drawPageBar(93, row3, 33, synth_params[SYN_ENVAMT], 127);
+
+  display.display();
+}
+
+// page 2: MIDI / step config
+void displayPageMidi() {
+  display.clearDisplay();
+  display.setFont();
+  drawPageTitle("MIDI");
+  const char* labels[CFG_COUNT] = { "Step size", "MIDI chan", "MIDI vel", "Send clk" };
+  const int rows[CFG_COUNT] = { 14, 27, 40, 52 };
+  char val[8];
+  for (int i = 0; i < CFG_COUNT; i++) {
+    drawPageLabel(5, rows[i], labels[i], page_sel == i);
+    display.setCursor(93, rows[i]);
+    if (i == CFG_STEPSIZE) {
+      display.print((cfg.step_size == SIXTEENTH_NOTE) ? "1/16" : (cfg.step_size == EIGHTH_NOTE) ? "1/8" : "1/4");
+    } else if (i == CFG_MIDICHAN) {
+      snprintf(val, sizeof(val), "%d", cfg.midi_chan);
+      display.print(val);
+    } else if (i == CFG_MIDIVEL) {
+      snprintf(val, sizeof(val), "%d", cfg.midi_velocity);
+      display.print(val);
+    } else {
+      display.print(cfg.midi_send_clock ? "on" : "off");
     }
-    display.setCursor(x, y);
-    display.print(labels[i]);
-
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds(values[i], 0, y, &x1, &y1, &w, &h);
-    display.setCursor(menu_value_right - w, y);
-    display.print(values[i]);
-  }
-
-  if (first > 0) {
-    display.drawBitmap(menu_arrow_x, menu_line_y + 3, image_ButtonUp_bits, image_arrow_w, image_arrow_h, WHITE);
-  }
-  if (first + menu_rows < count) {
-    display.drawBitmap(menu_arrow_x, dh - image_arrow_h - 2, image_ButtonDown_bits, image_arrow_w, image_arrow_h, WHITE);
   }
   display.display();
 }
 
-const char* const config_labels[CFG_COUNT] = { "Step size", "MIDI chan", "MIDI vel", "Send clock" };
-
-void displayConfig() {
-  char values[CFG_COUNT][12];
-  strcpy(values[CFG_STEPSIZE], (cfg.step_size==SIXTEENTH_NOTE) ? "1/16" : (cfg.step_size==EIGHTH_NOTE) ? "1/8" : "1/4");
-  snprintf(values[CFG_MIDICHAN], 12, "%d", cfg.midi_chan);
-  snprintf(values[CFG_MIDIVEL], 12, "%d", cfg.midi_velocity);
-  strcpy(values[CFG_MIDISENDCLK], cfg.midi_send_clock ? "on" : "off");
-  displayMenu("MIDI SETUP", config_labels, values, CFG_COUNT, cfg_selected);
-}
-
-const char* const synth_labels[SYN_COUNT] = { "Waveform", "Attack", "Decay", "Cutoff", "Resonance", "Env amount", "Grit" };
-const char* const synth_wave_labels[WAVE_COUNT] = { "saw", "square", "pulse", "saw+sub" };
-
-void displaySynthEdit(int selected) {
-  char values[SYN_COUNT][12];
-  for (int i = 0; i < SYN_COUNT; i++) {
-    if (i == SYN_WAVE) {
-      strcpy(values[i], synth_wave_labels[synth_params[i]]);
+// pages 3 & 4: LOAD / SAVE, 8 slot boxes, selected one filled
+void displayPageSlots() {
+  bool is_load = (page == PAGE_LOAD);
+  display.clearDisplay();
+  display.setFont();
+  drawPageTitle(is_load ? "LOAD" : "SAVE");
+  display.setCursor(5, 14);
+  display.print(is_load ? "Load seq slot" : "Save to slot");
+  for (int i = 0; i < numseqs; i++) {
+    int x = 9 + (i % 4) * 30, y = 25 + (i / 4) * 13;  // 2 rows x 4 slots
+    if (i == page_sel) {
+      display.fillRect(x, y, 19, 11, WHITE);
+      display.setTextColor(0);
     } else {
-      snprintf(values[i], 12, "%d", synth_params[i]);
+      display.drawRect(x, y, 19, 11, WHITE);
     }
+    display.setCursor(x + 7, y + 2);
+    display.print(i + 1);
+    display.setTextColor(WHITE);
   }
-  displayMenu("SYNTH", synth_labels, values, SYN_COUNT, selected);
+  display.setCursor(1, 56);
+  if (page_msg[0] && millis() - page_msg_millis < 1500) {
+    display.print(page_msg);
+  } else {
+    char hint[22];
+    snprintf(hint, sizeof(hint), "tap:%s   now:seq %d", is_load ? "load" : "save", seqr.seqno + 1);
+    display.print(hint);
+  }
+  display.display();
 }
 
 // 5 seconds of the "activity" animation, with the LED dance
