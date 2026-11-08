@@ -36,11 +36,11 @@ On every page the sequencer keeps running, push + turn still changes BPM, and st
 | 1. **SYNTH** | SHIFT + 2 | As now (wave text + bars for Grt/Cut/Res/Atk/Dcy/Env). **Wve row adds the wave icon at the right end of the row**, changing as you scroll waves. |
 | 2. **WAVE** (new) | SHIFT + 3 | Current model name + icon, and the model's 2 controls as bars. **Bar labels change per model** (Ratio/Index, Feedback/Index, Shape/Amount). Classic waves have no controls (show "no controls" or hide the bars). |
 | 3. **STEP** (new) | SHIFT + 4 | 8 boxes (one per step) showing each step's wave icon. Selected box filled white, icon inverted. Bottom line: `step 6: FM 3-op`. |
-| 4. **MIDI** | SHIFT + 5 | As now, plus **Out: MIDI / CLOCK / TRIG** (see section 4). |
-| 5. **LOAD** | SHIFT + 6 | As now. |
-| 6. **SAVE** | SHIFT + 7 | As now. |
+| 4. **DELAY** (new) | SHIFT + 5 | Stereo ping-pong delay, 5 controls (see section 5). |
+| 5. **MIDI** | SHIFT + 6 | As now, plus **Out: MIDI / CLOCK / TRIG** (see section 4). |
+| 6. **LOAD/SAVE** (merged) | SHIFT + 7 | Replaces the separate LOAD and SAVE pages. 8 slot boxes, selected filled white. **Turn** = pick slot, **tap** encoder = load, **hold encoder 1s** = save. Bottom line hint `tap:load hold:save`, then `loaded seq 3` / `saved to seq 3`. |
 
-Common page controls: turn = change selected value (or pick slot/step), tap encoder = next item (or load/save).
+Common page controls: turn = change selected value (or pick slot/step), tap encoder = next item.
 
 STEP page controls:
 - **Tap a step key** selects that step's box. On this page only, keys select instead of muting.
@@ -69,7 +69,32 @@ for list items, filled box for selected slot/step.
 - Cable (DIN to mono 3.5mm): **DIN pin 5 to tip**, **DIN pin 2 to sleeve**, **DIN pin 4 unconnected**
   (it carries 3.3V through 33 Ω). 3.3V pulses should trigger most Eurorack clock inputs.
 
-## 5. Wave icons
+## 5. Stereo delay (DELAY page)
+
+Output becomes **stereo**: the dry synth stays in the centre, and the delay echoes **ping-pong** left/right.
+Both DAC channels are free for audio, since clock/trig goes out over the DIN.
+
+Controls (page layout in the style of page 1):
+
+| Label | Control | Type | Notes |
+|---|---|---|---|
+| Tim | **Time** | text | tempo-synced: 1/16, 1/8T, 1/8, 1/8 dotted, 1/4T, 1/4. Follows BPM changes (a short tape-like warble is OK) |
+| Fbk | **Feedback** | bar | number of repeats, up to near-infinite |
+| Mix | **Mix** | bar | echo level |
+| Ton | **Tone** | bar | lowpass inside the feedback loop: each repeat gets darker (dub/tape) |
+| Grt | **Grit** | bar | bitcrush/saturation inside the loop: each repeat gets dirtier |
+
+Layout: `Tim` as text on the top row (like `Wve` on page 1), then two columns of bars:
+`Fbk` / `Mix` on the left, `Ton` / `Grt` on the right.
+
+Implementation notes:
+- Two delay lines (L and R), cross-fed for ping-pong: input goes to L, L feeds R, R feeds L.
+- 16-bit samples at 22.05 kHz = 44 KB per second per line. Budget about **1.5 s per line (~132 KB of the 264 KB RAM)**.
+  That covers a dotted 1/4 note at 60 BPM. At slower tempos, long divisions clamp to the maximum time.
+- CPU cost is tiny: a read, a write, a lowpass and a multiply per sample per side.
+- The delay settings are part of the global patch (saved with the synth patch).
+
+## 6. Wave icons
 
 ![STEP page and icons mockup](plan_step_page_icons.png)
 
@@ -100,7 +125,9 @@ static const unsigned char PROGMEM icon_wave_fbfm[]   = {0x1f,0xf0,0x10,0x10,0x1
 static const unsigned char PROGMEM icon_wave_pd[]     = {0x20,0x40,0x30,0x60,0x28,0x50,0x40,0x80,0x44,0x88,0x42,0x84,0x81,0x02};
 ```
 
-## 6. Later
+## 7. Later
 
 - **Parameter locks** (Digitakt style): lock any synth setting per step, not just the wave.
+- **Per-step delay send**: only chosen steps go into the delay (would be part of the parameter locks).
+- **Delay freeze**: 100% feedback with the input closed, so the last bar loops while you edit.
 - Possibly: Braids-style models, wavetables / user-drawn wave (step keys as 8 points), more voices/tracks.
