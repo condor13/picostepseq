@@ -25,6 +25,7 @@ void sequences_write() {
       step_array.add(s.vel);
       step_array.add(s.gate);
       step_array.add(s.on);
+      step_array.add(s.wave);
     }
   }
 
@@ -75,6 +76,8 @@ void sequences_read() {
       s.vel = step_array[1];
       s.gate = step_array[2];
       s.on = step_array[3];
+      s.wave = step_array[4] | -1;  // older files have no wave: follow global
+      if (s.wave < -1 || s.wave >= WAVE_COUNT) { s.wave = -1; }
       sequences[j][i] = s;
     }
   }

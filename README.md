@@ -89,19 +89,30 @@ Hold key 1 and tap:
 
 | SHIFT + key | Page |
 |---|---|
-| 2 | SYNTH: wave, grit, cutoff, resonance, attack, decay, filter env amount |
-| 3 | MIDI: step size, MIDI channel, MIDI velocity, send clock |
-| 4 | LOAD a sequence slot |
-| 5 | SAVE to a sequence slot |
+| 2 | **SYNTH**: wave (name + icon), grit, cutoff, resonance, attack, decay, env amount |
+| 3 | **WAVE**: model + its two controls (FM 2-op / FM 3-op: ratio, index; FB FM: feedback, index; PD: shape, amount) |
+| 4 | **STEP**: wave per step (icons); tap a step key to select it, turn to change its wave (`- - -` = follow SYNTH wave) |
+| 5 | **DELAY**: stereo ping-pong delay: time (tempo-synced), feedback, mix, tone, grit |
+| 6 | **MIDI**: step size, MIDI channel/velocity, send MIDI clock, **Out** (MIDI / CLK 4 / CLK 24 / TRIG) |
+| 7 | **LOAD/SAVE**: turn to pick a slot, tap to load, hold 1 sec to save |
 | same key again, or 8 | leave the page |
 
-On a page: **turn** the encoder to change the selected value (or pick a slot), **tap** it to select
-the next item (or load / save the selected slot). Push + turn still changes BPM, and step keys still
-mute and edit notes. The sequencer keeps running in the background.
+On a page: **turn** the encoder to change the selected value, **tap** it to select the next item.
+Push + turn still changes BPM, and step keys still mute and edit notes (except on the STEP page,
+where they select steps). The sequencer keeps running in the background.
+
+Waves: saw, square, pulse, saw+sub, FM 2-op, FM 3-op, FB FM, PD (phase distortion).
+FM ratios always snap to in-tune values. The Env amount also makes the FM index / PD amount follow
+the envelope (pluck). Audio out is stereo: dry synth in the centre, delay echoes bounce left/right.
+
+**Clock/trig out**: with Out set to CLK 4 / CLK 24 / TRIG, the MIDI OUT jack sends 3.3V pulses on its
+data line instead of MIDI (USB MIDI keeps working). CLK pulses run only while playing; TRIG pulses on
+each active step. For a DIN socket: DIN pin 5 = signal, pin 2 = ground, leave pin 4 unconnected.
 
 Key 1 alone still works as a normal step key (mute, pitch edit). Each step's gate length ends the note
-early with a quick release. The synth patch is global and saved to flash (`synth_patch.json`) when you
-pause. Sequences saved while playing are written to flash on the next pause.
+early with a quick release. The synth patch (incl. wave and delay settings) is global and saved to
+flash (`synth_patch.json`) when you pause. Sequences (incl. per-step waves) saved while playing are
+written to flash on the next pause.
 
 ### MIDI
 

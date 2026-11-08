@@ -15,6 +15,7 @@ typedef struct {
   uint8_t vel;  // midi velocity (always 127 currently)
   uint8_t gate; // how long note should be on in 0-15 arbitrary units
   bool on;      // does this note play or is or muted
+  int8_t wave;  // per-step synth wave, -1 = follow global wave
 } Step;
 
 typedef enum {
@@ -33,11 +34,11 @@ typedef enum {
 const int valid_step_sizes[] = {QUARTER_NOTE, EIGHTH_NOTE, SIXTEENTH_NOTE};
 const int valid_step_sizes_cnt = 3;
 
-typedef void (*TriggerFunc)(uint8_t note, uint8_t vel, uint8_t gate, bool on);
+typedef void (*TriggerFunc)(uint8_t note, uint8_t vel, uint8_t gate, bool on, int8_t wave);
 typedef void (*ClockFunc)(clock_type_t type); // , int pos);
 
 // stubs for when Sequencer object is only partially initialized
-void fake_note_callback(uint8_t note, uint8_t vel, uint8_t gate, bool on) {  }
+void fake_note_callback(uint8_t note, uint8_t vel, uint8_t gate, bool on, int8_t wave) {  }
 void fake_clock_callback(clock_type_t type) { }
 
 class StepSequencer {
@@ -101,7 +102,7 @@ public:
     // if we have a held note and it's time to turn it off, turn it off
     if( held_gate_millis != 0 && millis() >= held_gate_millis ) {
       held_gate_millis = 0;
-      off_func( held_note.note, held_note.vel, held_note.gate, held_note.on);
+      off_func( held_note.note, held_note.vel, held_note.gate, held_note.on, held_note.wave);
     }
 
     if( send_clock && playing && !extclk_micros ) {
@@ -144,7 +145,7 @@ public:
     Step s = steps[stepi];
     s.note += transpose;
 
-    on_func(s.note, s.vel, s.gate, s.on);
+    on_func(s.note, s.vel, s.gate, s.on, s.wave);
 
     held_note = s;
     uint32_t micros_per_step = ticks_per_step * tick_micros;

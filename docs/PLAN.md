@@ -1,7 +1,13 @@
 # picostepseq synth: plan for the next firmware rewrite
 
-Status: **planned, not built yet.** Everything below was agreed in design discussions.
-Current firmware (synth, SYNTH/MIDI/LOAD/SAVE pages, play/pause icons, splash) is described in the README.
+Status: **built** (sections 1-6). Section 7 ("Later") is still open.
+Not yet verified with the real Arduino toolchain / hardware at the time of writing.
+
+Implementation notes that differ from or add to the plan:
+- WAVE page edits the **global** model (same as SYNTH "Wve"). To tweak the controls of a model that is only
+  used on some steps, temporarily set it as the global wave.
+- MIDI page "Out" has 4 values: MIDI, CLK 4, CLK 24, TRIG. The MIDI page has 5 rows.
+- DELAY page bottom line shows the actual delay time in ms at the current tempo (`!` = clamped to 1.5 s).
 
 ## 1. Sound engine: four new models (own code, not ported)
 
