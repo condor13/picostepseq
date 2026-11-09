@@ -55,6 +55,16 @@ bool song_cell_has_mods(const SongCell& c) {
   return c.pat >= 0 && (c.trs != 0 || c.len != numsteps || c.dir != DIR_FWD || c.dmix >= 0);
 }
 
+// text shown in a TRACKER cell: "..", "03", "3x4", "3/2"
+// (lives here, not in the .ino, because the Arduino IDE puts auto-generated
+//  prototypes above the #include of this file, where SongCell isn't known yet)
+void song_cell_text(const SongCell& c, char* buf, int len) {
+  if (c.pat < 0) { snprintf(buf, len, ".."); }
+  else if (c.rep == 1) { snprintf(buf, len, "%02d", c.pat + 1); }
+  else if (c.rep > 1) { snprintf(buf, len, "%dx%d", c.pat + 1, c.rep); }
+  else { snprintf(buf, len, "%d/%d", c.pat + 1, -c.rep); }
+}
+
 // core0: called by the sequencer at the start of every bar
 void song_bar() {
   if (!song_mode) { return; }

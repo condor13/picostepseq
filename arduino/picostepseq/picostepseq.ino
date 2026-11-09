@@ -1161,13 +1161,6 @@ void displayPageSlots() {
 // page 7: TRACKER (song) -- 16 cells down each column, cursor = filled, playing = outline
 const int trk_box_w = 28, trk_box_h = 10;
 
-void trackerCellText(const SongCell& c, char* buf, int len) {
-  if (c.pat < 0) { snprintf(buf, len, ".."); }
-  else if (c.rep == 1) { snprintf(buf, len, "%02d", c.pat + 1); }
-  else if (c.rep > 1) { snprintf(buf, len, "%dx%d", c.pat + 1, c.rep); }
-  else { snprintf(buf, len, "%d/%d", c.pat + 1, -c.rep); }
-}
-
 void displayPageTracker() {
   display.clearDisplay();
   display.setFont();
@@ -1204,7 +1197,7 @@ void displayPageTracker() {
       display.drawRect(x, y, trk_box_w, trk_box_h, WHITE);
     }
     char buf[8];
-    trackerCellText(song[i], buf, sizeof(buf));
+    song_cell_text(song[i], buf, sizeof(buf));
     int tw = 6 * strlen(buf) - 1;
     display.setTextColor(fg);
     display.setCursor(x + (trk_box_w - tw) / 2, y + 1);
