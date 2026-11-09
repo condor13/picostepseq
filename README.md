@@ -95,7 +95,8 @@ Hold key 1 and tap:
 | 5 | **DELAY**: stereo ping-pong delay: time (tempo-synced), feedback, mix, tone, grit |
 | 6 | **MIDI**: step size, MIDI channel/velocity, send MIDI clock, **Out** (MIDI / CLK 4 / CLK 24 / TRIG) |
 | 7 | **LOAD/SAVE**: turn to pick a slot, tap to load, hold 1 sec to save |
-| same key again, or 8 | leave the page |
+| 8 | **TRACKER**: song mode, see below |
+| same key again | leave the page |
 
 On a page: **turn** the encoder to change the selected value, **tap** it to select the next item.
 Push + turn still changes BPM, and step keys still mute and edit notes (except on the STEP page,
@@ -104,6 +105,32 @@ where they select steps). The sequencer keeps running in the background.
 Waves: saw, square, pulse, saw+sub, FM 2-op, FM 3-op, FB FM, PD (phase distortion).
 FM ratios always snap to in-tune values. The Env amount also makes the FM index / PD amount follow
 the envelope (pluck). Audio out is stereo: dry synth in the centre, delay echoes bounce left/right.
+
+**TRACKER (song mode)**: a looping song of up to 16 cells, played down each column. Each cell plays one
+of the 8 saved patterns. The first empty cell (`..`) marks the end of the loop.
+
+![TRACKER page](docs/picostepseq_tracker.png)
+
+- Entering the page stops pattern playback (a short "sequencer stopped" note shows). A song that is
+  already playing keeps playing.
+- **Turn** the encoder to move the cursor (filled box), **tap** it to play / pause the song, **hold 1 sec**
+  to clear the selected cell. The playing cell has an outline (it blinks when the cursor is on it).
+- **Tap step key N** to put pattern N into the selected cell; the cursor moves on.
+- **Hold a step key and turn** to change the selected cell:
+
+  | Hold key | Setting | Values |
+  |---|---|---|
+  | 1 | repeat / divide | x1-x6, x8 (play N times), /2-/5 (play only every Nth time round the loop) |
+  | 2 | transpose | -24 .. +24 semitones |
+  | 3 | length | 1-8 steps |
+  | 4 | direction | fwd, rev, png (ping-pong: alternates each time the cell plays), rnd |
+  | 5 | delay mix | `--` = use the DELAY page setting, or 0-127 for this cell |
+
+- The bottom bar shows the selected cell's settings, e.g. `x2 +05 L8 fwd D--`. A small dot in a cell
+  means it has transpose / length / direction / delay set.
+- Leaving the page while the song plays keeps it playing; leaving while paused ends song mode.
+  Tapping the encoder on the main screen ends song mode and brings your pattern back.
+- The song is saved to flash (`song.json`) when you pause it or leave the page.
 
 **Clock/trig out**: with Out set to CLK 4 / CLK 24 / TRIG, the MIDI OUT jack sends 3.3V pulses on its
 data line instead of MIDI (USB MIDI keeps working). CLK pulses run only while playing; TRIG pulses on

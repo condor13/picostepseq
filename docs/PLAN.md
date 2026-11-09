@@ -131,7 +131,17 @@ static const unsigned char PROGMEM icon_wave_fbfm[]   = {0x1f,0xf0,0x10,0x10,0x1
 static const unsigned char PROGMEM icon_wave_pd[]     = {0x20,0x40,0x30,0x60,0x28,0x50,0x40,0x80,0x44,0x88,0x42,0x84,0x81,0x02};
 ```
 
-## 7. Later
+## 7. TRACKER (song mode), built
+
+SHIFT+8 opens the TRACKER page (SHIFT+8 no longer exits; every page exits with its own combo).
+See the README for controls. Implementation:
+- `song.h`: 16 cells (pattern, repeat/divide, transpose +-24, length 1-8, direction, delay mix), saved as `song.json`.
+- The sequencer gained a per-bar hook (`bar_func`) plus bar length / direction / song transpose / rest,
+  so pattern changes happen exactly on the bar boundary on core0.
+- Pattern-mode steps are backed up when song mode starts and restored when it ends.
+- Synth gained a per-cell delay mix override.
+
+## 8. Later
 
 - **Parameter locks** (Digitakt style): lock any synth setting per step, not just the wave.
 - **Per-step delay send**: only chosen steps go into the delay (would be part of the parameter locks).

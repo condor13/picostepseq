@@ -36,6 +36,10 @@ const int valid_step_sizes_cnt = 3;
 
 typedef void (*TriggerFunc)(uint8_t note, uint8_t vel, uint8_t gate, bool on, int8_t wave);
 typedef void (*ClockFunc)(clock_type_t type); // , int pos);
+typedef void (*BarFunc)(void);  // called at the start of every bar (song mode hook)
+
+// step playback direction within a bar
+enum { DIR_FWD = 0, DIR_REV, DIR_PINGPONG, DIR_RANDOM, DIR_COUNT };
 
 // stubs for when Sequencer object is only partially initialized
 void fake_note_callback(uint8_t note, uint8_t vel, uint8_t gate, bool on, int8_t wave) {  }
@@ -60,6 +64,14 @@ public:
   ClockFunc clk_func;
   Step held_note;
   Step steps[numsteps];
+  // per-bar playback shape (song mode sets these from the bar_func, defaults = normal 8-step forward)
+  BarFunc bar_func;
+  int bar_pos;         // position within the bar, 0..bar_len-1
+  int bar_len;         // steps per bar, 1..numsteps
+  int bar_dir;         // DIR_FWD, DIR_REV, DIR_PINGPONG (alternates per bar_pass), DIR_RANDOM
+  int bar_pass;        // how many times this bar shape has repeated (for ping-pong)
+  int song_transpose;  // added on top of transpose
+  bool rest;           // true = advance but play nothing
 
   StepSequencer( float atempo=120, uint8_t aseqno=0 ) {
     transpose = 0;
@@ -75,6 +87,25 @@ public:
     on_func = fake_note_callback;
     off_func = fake_note_callback;
     clk_func = fake_clock_callback;
+    bar_func = nullptr;
+    reset_bar_shape();
+  }
+
+  // back to normal: 8 steps, forward, no song transpose
+  void reset_bar_shape() {
+    bar_pos = -1;
+    bar_len = numsteps;
+    bar_dir = DIR_FWD;
+    bar_pass = 0;
+    song_transpose = 0;
+    rest = false;
+  }
+
+  // which step plays at bar position pos
+  int step_for_pos(int pos) {
+    bool reverse = (bar_dir == DIR_REV) || (bar_dir == DIR_PINGPONG && (bar_pass & 1));
+    if (bar_dir == DIR_RANDOM) { return rand() % bar_len; }
+    return reverse ? (bar_len - 1 - pos) : pos;
   }
 
   // get tempo as floating point, computed dynamically from ticks_micros
@@ -140,10 +171,17 @@ public:
     if( !playing ) { return; }
     (void)delta_t; // silence unused variable
 
-    stepi = (stepi + 1) % numsteps; // go to next step
+    bar_pos++;  // go to next step
+    if (bar_pos >= bar_len) { bar_pos = 0; }
+    if (bar_pos == 0 && bar_func) { bar_func(); }  // song mode may load a new pattern / bar shape here
+    if (bar_pos >= bar_len) { bar_pos = 0; }
+    stepi = step_for_pos(bar_pos);
+
+    if (rest) { return; }  // nothing to play this bar
 
     Step s = steps[stepi];
-    s.note += transpose;
+    int n = s.note + transpose + song_transpose;
+    s.note = (n < 0) ? 0 : (n > 127) ? 127 : n;
 
     on_func(s.note, s.vel, s.gate, s.on, s.wave);
 
@@ -161,6 +199,7 @@ public:
   // signal to sequencer/MIDI core we want to start playing
   void play() {
     stepi = -1; // hmm, but goes to 0 on first downbeat
+    bar_pos = -1;
     ticki = 0;
     playing = true;
     if(send_clock && !extclk_micros) {
@@ -174,10 +213,16 @@ public:
     playing = false;
   }
 
+  // continue after pause() from where it stopped
+  void resume() {
+    playing = true;
+  }
+
   // signal to sequencer/MIDI core we want to stop playing
   void stop() {
     playing = false;
     stepi = -1;
+    bar_pos = -1;
     if(send_clock && !extclk_micros) {
       clk_func( STOP );
     }

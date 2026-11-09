@@ -130,6 +130,7 @@ uint32_t midiclk_last_micros = 0;
 
 
 #include "saveload.h" /// FIXME:
+#include "song.h"
 
 //
 // -- clock / trig out on the MIDI OUT DIN (GP16), core0 only
@@ -360,6 +361,7 @@ void configure_sequencer() {
   seqr.on_func = seq_note_on;
   seqr.off_func = send_note_off;
   seqr.clk_func = send_clock_start_stop;
+  seqr.bar_func = song_bar;
   seqr.send_clock = true;  // always get clock ticks; MIDI clock sending is gated in send_clock_start_stop()
 };
 
@@ -374,6 +376,7 @@ void setup1() {
   sequences_read();
   sequence_load(seqr.seqno);  // 0
   synth_patch_read();
+  song_read();
 
   configure_sequencer();
 
@@ -430,10 +433,18 @@ void setup1() {
  * SHIFT + key5  -- page 4: DELAY
  * SHIFT + key6  -- page 5: MIDI (incl. clock/trig out mode)
  * SHIFT + key7  -- page 6: LOAD/SAVE
- * SHIFT + same key again, or SHIFT + key8 -- leave page
+ * SHIFT + key8  -- page 7: TRACKER (song)
+ * SHIFT + same key again -- leave page
  * (key1 alone still behaves as a normal step key)
  *
  * The sequencer keeps running while a page is shown.
+ *
+ * TRACKER page:
+ *   turn = move cursor (down each column), tap = play/pause song, hold 1s = clear cell
+ *   tap step key N = put pattern N in the cell (cursor moves on)
+ *   hold key1 + turn = repeat/divide, key2 = transpose, key3 = length, key4 = direction, key5 = delay mix
+ *   entering the page stops pattern playback; a running song keeps running when you leave
+ *   tapping the encoder on the main screen ends song mode
  */
 
 // variables for UI state management
@@ -446,6 +457,7 @@ int step_push = -1;
 bool step_edited = false;
 bool shift_used = false;          // key1 is being used as SHIFT for a combo
 bool key_consumed[numsteps];      // key press was used by a page: no preview / mute on release
+bool tracker_pending[numsteps];   // TRACKER: key tapped (not turned) -> enter pattern on release
 
 enum {
   CFG_STEPSIZE = 0,
@@ -465,6 +477,7 @@ enum {
   PAGE_DELAY,
   PAGE_MIDI,
   PAGE_SLOTS,
+  PAGE_TRACKER,
   PAGE_COUNT
 };
 
@@ -491,18 +504,84 @@ int page_item_count() {
     case PAGE_DELAY: return delay_page_count;
     case PAGE_MIDI: return CFG_COUNT;
     case PAGE_SLOTS: return numseqs;
+    case PAGE_TRACKER: return song_len;
     default: return 1;
   }
 }
 
+// switch pages, with TRACKER enter/leave rules
+void page_set(int newpage) {
+  if (page == PAGE_TRACKER && newpage != PAGE_TRACKER) {
+    // leaving TRACKER: a paused song ends (pattern mode restored), a playing song keeps going
+    if (song_mode && !seqr.playing) { song_end(); }
+    song_write();
+  }
+  if (newpage == PAGE_TRACKER && page != PAGE_TRACKER) {
+    page_msg[0] = 0;
+    if (!song_mode) {
+      if (seqr.playing) {  // entering TRACKER stops pattern playback
+        seqr.stop();
+        snprintf(page_msg, sizeof(page_msg), "sequencer stopped");
+        page_msg_millis = millis();
+      }
+      song_backup();
+    }
+  }
+  page = newpage;
+  page_sel = (page == PAGE_SLOTS) ? seqr.seqno : (page == PAGE_TRACKER) ? max((int)song_cell_playing, 0) : 0;
+  if (page != PAGE_TRACKER) { page_msg[0] = 0; }
+}
+
 // SHIFT + key pressed: open/close pages
 void page_shift_key(int key) {
-  if (key == 7) { page = PAGE_NONE; return; }  // SHIFT+8 = exit
   if (key < PAGE_SYNTH || key >= PAGE_COUNT) { return; }
-  if (page == key) { page = PAGE_NONE; return; }  // same combo again = exit
-  page = key;
-  page_sel = (page == PAGE_SLOTS) ? seqr.seqno : 0;
-  page_msg[0] = 0;
+  page_set((page == key) ? PAGE_NONE : key);  // same combo again = exit
+}
+
+// TRACKER: hold step key + turn = change a setting of the selected cell
+void tracker_modify(int key, int delta) {
+  SongCell& c = song[page_sel];
+  if (c.pat < 0) { return; }  // empty cell: enter a pattern first
+  if (key == 0) {  // repeat / divide
+    int idx = 0;
+    for (int k = 0; k < song_reps_count; k++) { if (song_reps[k] == c.rep) { idx = k; } }
+    c.rep = song_reps[constrain(idx + delta, 0, song_reps_count - 1)];
+  } else if (key == 1) {
+    c.trs = constrain(c.trs + delta, -24, 24);
+  } else if (key == 2) {
+    c.len = constrain(c.len + delta, 1, numsteps);
+  } else if (key == 3) {
+    c.dir = constrain(c.dir + delta, 0, DIR_COUNT - 1);
+  } else if (key == 4) {  // delay mix: "--" (global) then 0..127
+    int m = c.dmix;
+    if (m < 0) { m = (delta > 0) ? 0 : -1; }
+    else { m += delta * 4; if (m < 0) { m = -1; } }
+    c.dmix = min(m, 127);
+  } else {
+    return;
+  }
+  song_dirty = true;
+}
+
+// TRACKER: tap step key N = pattern N into the selected cell, cursor moves on
+void tracker_enter_pattern(int pat) {
+  SongCell& c = song[page_sel];
+  if (c.pat < 0) { song_clear_cell(c); }
+  c.pat = pat;
+  song_dirty = true;
+  page_sel = min(page_sel + 1, song_len - 1);
+}
+
+// TRACKER: encoder tap = play / pause / resume the song
+void tracker_play_pause() {
+  if (!song_mode) {
+    song_start();
+  } else if (seqr.playing) {
+    seqr.pause();
+    song_write();  // safe to write flash while paused
+  } else {
+    seqr.resume();
+  }
 }
 
 // encoder turned while a page is shown
@@ -554,11 +633,16 @@ void page_turn(int delta) {
   else if (page == PAGE_SLOTS) {  // pick slot, wrapping around
     page_sel = (page_sel + delta % numseqs + numseqs) % numseqs;
   }
+  else if (page == PAGE_TRACKER) {  // move cursor (down each column)
+    page_sel = constrain(page_sel + delta, 0, song_len - 1);
+  }
 }
 
 // encoder tapped while a page is shown
 void page_tap() {
-  if (page == PAGE_SLOTS) {
+  if (page == PAGE_TRACKER) {
+    tracker_play_pause();
+  } else if (page == PAGE_SLOTS) {
     sequence_load(page_sel);
     snprintf(page_msg, sizeof(page_msg), "  loaded seq %d", page_sel + 1);
     page_msg_millis = millis();
@@ -577,6 +661,10 @@ void page_hold() {
     if (!seqr.playing) {
       sequences_write();
     }
+  }
+  else if (page == PAGE_TRACKER) {  // clear selected cell
+    song_clear_cell(song[page_sel]);
+    song_dirty = true;
   }
 }
 
@@ -614,6 +702,11 @@ void loop1() {
     if (encoder_push_millis > 0) { encoder_turned_while_held = true; }
     // UI: SHIFT held: ignore turns
     if (shift_used && keys[0].isPressed()) {
+    }
+    // UI: TRACKER page, step key held + turn = change a setting of the selected cell
+    else if (page == PAGE_TRACKER && step_push > -1 && encoder_push_millis == 0) {
+      tracker_modify(step_push, encoder_delta);
+      tracker_pending[step_push] = false;  // was a turn, not a tap
     }
     // UI: STEP page, step key held + turn = change that step's wave
     else if (page == PAGE_STEP && step_push > -1 && encoder_push_millis == 0) {
@@ -676,7 +769,10 @@ void loop1() {
     // UI: encoder tap with no key held and no turn
     if (step_push == -1 && !encoder_turned_while_held && (now - encoder_push_millis) < 300) {
       if (page != PAGE_NONE) {
-        page_tap();  // select next / load
+        page_tap();  // select next / load / song play-pause
+      } else if (song_mode) {
+        song_end();  // main screen tap ends song mode (back to pattern mode, stopped)
+        song_write();
       } else {
         seqr.toggle_play_stop();  // play/pause
         delay(10);  // wait a bit for sequencer to change state
@@ -707,6 +803,11 @@ void loop1() {
         key_consumed[i] = true;
         page_shift_key(i);
       }
+      else if (page == PAGE_TRACKER && encoder_push_millis == 0) {
+        // UI: TRACKER page, key = pattern number (on release) or modifier (hold + turn)
+        key_consumed[i] = true;
+        tracker_pending[i] = true;
+      }
       else if (page == PAGE_STEP && encoder_push_millis == 0) {
         // UI: STEP page, key selects that step
         page_sel = i;
@@ -726,6 +827,9 @@ void loop1() {
         // pushing encoder (gate edit combo): nothing to do on release
       } else if (key_consumed[i]) {
         // used by a page or SHIFT combo: no mute / note off
+        if (page == PAGE_TRACKER && tracker_pending[i] && !shift_used) {
+          tracker_enter_pattern(i);
+        }
       } else if (shift_used) {  // UI: key1 as SHIFT, no mute toggling
         if (i == 0 && !seqr.playing) {
           send_note_off(s.note, s.vel, s.gate, true, s.wave);  // end key1's preview note
@@ -743,6 +847,7 @@ void loop1() {
         }
       }
       key_consumed[i] = false;
+      tracker_pending[i] = false;
       step_push_millis = 0;
       step_push = -1;  //
       step_edited = false;
@@ -763,6 +868,7 @@ void loop1() {
     case PAGE_DELAY: displayPageDelay(); break;
     case PAGE_MIDI: displayPageMidi(); break;
     case PAGE_SLOTS: displayPageSlots(); break;
+    case PAGE_TRACKER: displayPageTracker(); break;
     default: displayUpdate(step_push); break;
   }
 }
@@ -1049,6 +1155,84 @@ void displayPageSlots() {
   } else {
     display.print("tap:load  hold:save");
   }
+  display.display();
+}
+
+// page 7: TRACKER (song) -- 16 cells down each column, cursor = filled, playing = outline
+const int trk_box_w = 28, trk_box_h = 10;
+
+void trackerCellText(const SongCell& c, char* buf, int len) {
+  if (c.pat < 0) { snprintf(buf, len, ".."); }
+  else if (c.rep == 1) { snprintf(buf, len, "%02d", c.pat + 1); }
+  else if (c.rep > 1) { snprintf(buf, len, "%dx%d", c.pat + 1, c.rep); }
+  else { snprintf(buf, len, "%d/%d", c.pat + 1, -c.rep); }
+}
+
+void displayPageTracker() {
+  display.clearDisplay();
+  display.setFont();
+  display.setTextWrap(false);
+
+  // title bar with PLAY / PAUSE in the middle
+  bool song_playing = song_mode && seqr.playing;
+  display.fillRect(0, 0, dw, 9, WHITE);
+  display.setTextColor(0);
+  display.setCursor(1, 1);
+  display.print(page_title_left);
+  display.setCursor(dw - 1 - 6 * 7, 1);
+  display.print("TRACKER");
+  if (song_playing) {
+    display.drawBitmap(54, 2, image_play_text_bits, image_play_text_w, image_playpause_text_h, 0);
+  } else {
+    display.drawBitmap(52, 2, image_pause_text_bits, image_pause_text_w, image_playpause_text_h, 0);
+  }
+
+  // cells, down each column
+  int playing_cell = song_playing ? song_cell_playing : -1;
+  bool blink_on = (millis() / 125) % 2;
+  for (int i = 0; i < song_len; i++) {
+    int x = 2 + (i / 4) * 32;
+    int y = 11 + (i % 4) * 11;
+    bool cursor = (i == page_sel);
+    bool playing = (i == playing_cell);
+    bool filled = cursor && !(playing && blink_on);  // cursor on playing cell blinks
+    uint16_t fg = WHITE;
+    if (filled) {
+      display.fillRect(x, y, trk_box_w, trk_box_h, WHITE);
+      fg = 0;
+    } else if (playing || cursor) {
+      display.drawRect(x, y, trk_box_w, trk_box_h, WHITE);
+    }
+    char buf[8];
+    trackerCellText(song[i], buf, sizeof(buf));
+    int tw = 6 * strlen(buf) - 1;
+    display.setTextColor(fg);
+    display.setCursor(x + (trk_box_w - tw) / 2, y + 1);
+    display.print(buf);
+    if (song_cell_has_mods(song[i])) {  // "has more settings" dot
+      display.fillRect(x + trk_box_w - 3, y + 2, 2, 2, fg);
+    }
+  }
+
+  // bottom info bar: selected cell's settings (or a short message)
+  display.fillRect(0, 55, dw, 9, WHITE);
+  display.setTextColor(0);
+  char info[24];
+  const SongCell& c = song[page_sel];
+  if (page_msg[0] && millis() - page_msg_millis < 1500) {
+    snprintf(info, sizeof(info), "%s", page_msg);
+  } else if (c.pat < 0) {
+    snprintf(info, sizeof(info), "empty = loop end");
+  } else {
+    char r[4], d[4];
+    if (c.rep >= 1) { snprintf(r, sizeof(r), "x%d", c.rep); } else { snprintf(r, sizeof(r), "/%d", -c.rep); }
+    if (c.dmix < 0) { snprintf(d, sizeof(d), "--"); } else { snprintf(d, sizeof(d), "%d", c.dmix); }
+    snprintf(info, sizeof(info), "%s %c%02d L%d %s D%s", r, (c.trs >= 0) ? '+' : '-', abs(c.trs), c.len, song_dir_labels[c.dir], d);
+  }
+  int tw = 6 * strlen(info) - 1;
+  display.setCursor((dw - tw) / 2, 56);
+  display.print(info);
+  display.setTextColor(WHITE);
   display.display();
 }
 

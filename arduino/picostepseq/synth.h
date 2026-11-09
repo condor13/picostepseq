@@ -106,6 +106,7 @@ volatile int synth_params[SYN_COUNT] = {
 };
 volatile bool synth_patch_dirty = false;
 volatile float synth_bpm = 120;  // set by the sequencer side, used for delay time
+volatile int synth_dly_mix_override = -1;  // song mode: per-cell delay mix, -1 = use SYN_DLY_MIX
 
 // change a param by a delta, clamped to its range
 void synth_param_adjust(int p, int delta) {
@@ -313,7 +314,8 @@ void synth_render_block(int16_t* out_l, int16_t* out_r) {
   dly.time_cur += dslew;
   int dly_samples = (int)dly.time_cur;
   int32_t dly_fbk_q15 = (int32_t)(synth_params[SYN_DLY_FBK] / 127.0f * 0.95f * 32767);
-  int32_t dly_mix_q15 = (int32_t)(synth_params[SYN_DLY_MIX] / 127.0f * 32767);
+  int dly_mix = (synth_dly_mix_override >= 0) ? synth_dly_mix_override : synth_params[SYN_DLY_MIX];
+  int32_t dly_mix_q15 = (int32_t)(dly_mix / 127.0f * 32767);
   float tone = synth_params[SYN_DLY_TONE] / 127.0f;
   float tone_fc = 300.0f * powf(2.0f, tone * 5.2f);   // 300 Hz .. ~11 kHz
   int32_t dly_tone_q14 = (int32_t)((1.0f - expf(-6.2831853f * tone_fc / synth_sample_rate)) * 16384);
